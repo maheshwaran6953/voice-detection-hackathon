@@ -1,14 +1,11 @@
 from fastapi import APIRouter, HTTPException, Header
-from typing import Optional, Tuple
+from typing import Optional
 import time
-import requests
-import tempfile
-import os
 import base64
+import numpy as np
 from ..models import DetectionRequest, DetectionResponse, Language
 from core.audio_processor import AudioProcessor
 from ml.voice_detector import VoiceDetector
-import numpy as np
 
 router = APIRouter(prefix="/detect", tags=["Detection"])
 
@@ -18,6 +15,14 @@ VALID_API_KEYS = {
     "test-key": "test-team",
     "demo-key": "demo-team"
 }
+
+# Audio constraints (adjust based on hackathon requirements)
+MAX_DURATION_SECONDS = 60  # Maximum audio duration
+MIN_DURATION_SECONDS = 1   # Minimum audio duration  
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10MB maximum
+MIN_SAMPLE_RATE = 8000     # Minimum sample rate
+MAX_SAMPLE_RATE = 48000    # Maximum sample rate
+MIN_AUDIO_RMS = 0.001       # Minimum audio volume (to detect silence)
 
 # Initialize detector
 detector = None
@@ -37,86 +42,84 @@ def validate_api_key(api_key: str):
             detail="Invalid API key"
         )
 
-def get_test_mode_override(url: str) -> Optional[str]:
+def decode_base64_audio(base64_string: str) -> bytes:
     """
-    Check if URL is a test mode and return hardcoded result.
-    Returns: "HUMAN", "AI_GENERATED", or None
+    Decode base64 audio string to bytes
+    Handles both plain base64 and data URLs
     """
-    url_lower = url.lower()
-    if "human-test-mode" in url_lower:
-        return "HUMAN"
-    elif "ai-test-mode" in url_lower:
-        return "AI_GENERATED"
-    return None
-
-def download_audio_from_url(url: str) -> bytes:
-    """Download audio file from URL"""
-    # Handle base64-encoded audio
-    if url.startswith('data:audio/') or url.startswith('base64://'):
-        try:
-            if url.startswith('data:audio/'):
-                # Data URL format
-                base64_data = url.split(',', 1)[1]
-            else:
-                # base64:// format
-                base64_data = url[9:]
-            
-            return base64.b64decode(base64_data)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid base64 audio: {str(e)}"
-            )
-    
-    # Handle test modes
-    if "test-mode" in url.lower():
-        processor = AudioProcessor()
-        
-        # Determine audio type from URL
-        if "ai-test-mode" in url.lower():
-            audio_type = "ai"
-        elif "human-test-mode" in url.lower():
-            audio_type = "human"
-        else:
-            # Default test-mode generates human audio
-            audio_type = "human"
-        
-        audio = processor.generate_test_audio(duration=2.0, audio_type=audio_type)
-        # Convert to WAV bytes
-        from scipy.io import wavfile
-        import io
-        
-        # Use BytesIO instead of temp file to avoid locking issues
-        wav_buffer = io.BytesIO()
-        wavfile.write(wav_buffer, 16000, (audio * 32767).astype(np.int16))
-        return wav_buffer.getvalue()
-    
-    # Handle regular URLs
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-
-        # Check content type
-        content_type = response.headers.get('content-type', '')
-        if 'audio' not in content_type and not url.lower().endswith(('.mp3', '.wav', '.flac', '.ogg')):
-            raise HTTPException(
-                status_code=400,
-                detail="URL does not point to an audio file"
-            )
-
-        return response.content
-    except requests.exceptions.RequestException as e:
+        # Check if it's a data URL
+        if base64_string.startswith('data:audio/'):
+            # Extract base64 part after comma
+            base64_string = base64_string.split(',', 1)[1]
+        
+        # Decode base64
+        audio_bytes = base64.b64decode(base64_string)
+        return audio_bytes
+    
+    except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Failed to download audio: {str(e)}"
+            detail=f"Invalid base64 audio: {str(e)}"
         )
 
+def validate_audio_size(audio_bytes: bytes):
+    """Validate audio file size"""
+    if len(audio_bytes) > MAX_FILE_SIZE_BYTES:
+        size_mb = len(audio_bytes) / (1024 * 1024)
+        max_mb = MAX_FILE_SIZE_BYTES / (1024 * 1024)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Audio file too large: {size_mb:.2f}MB. Maximum size is {max_mb:.0f}MB."
+        )
+    
+    # Also check minimum size (at least 1KB)
+    if len(audio_bytes) < 1024:
+        raise HTTPException(
+            status_code=400,
+            detail="Audio file is too small (less than 1KB)."
+        )
 
-def save_temp_audio(audio_bytes: bytes, extension: str = '.wav') -> str:
-    """Save audio bytes to temporary file"""
-    with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
-        tmp.write(audio_bytes)
-        return tmp.name
+def validate_audio_constraints(audio_bytes: bytes, audio_data: np.ndarray, sample_rate: int):
+    """Validate audio against constraints"""
+    errors = []
+    
+    # 1. File size check (already done in validate_audio_size, but double-check)
+    if len(audio_bytes) > MAX_FILE_SIZE_BYTES:
+        size_mb = len(audio_bytes) / (1024 * 1024)
+        max_mb = MAX_FILE_SIZE_BYTES / (1024 * 1024)
+        errors.append(f"File size {size_mb:.2f}MB exceeds maximum {max_mb:.0f}MB.")
+    
+    # 2. Duration check
+    duration = len(audio_data) / sample_rate
+    if duration > MAX_DURATION_SECONDS:
+        errors.append(f"Audio duration {duration:.1f}s exceeds maximum {MAX_DURATION_SECONDS}s.")
+    
+    if duration < MIN_DURATION_SECONDS:
+        errors.append(f"Audio duration {duration:.1f}s is too short. Minimum is {MIN_DURATION_SECONDS}s.")
+    
+    # 3. Sample rate check
+    if sample_rate < MIN_SAMPLE_RATE or sample_rate > MAX_SAMPLE_RATE:
+        errors.append(f"Sample rate {sample_rate}Hz is outside acceptable range ({MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE}Hz).")
+    
+    # 4. Check if audio is mostly silence
+    rms = np.sqrt(np.mean(audio_data ** 2))
+    if rms < MIN_AUDIO_RMS:
+        errors.append(f"Audio appears to be silent or has very low volume (RMS: {rms:.4f}).")
+    
+    # 5. Check for NaN or infinite values
+    if np.any(np.isnan(audio_data)):
+        errors.append("Audio contains NaN (not a number) values.")
+    
+    if np.any(np.isinf(audio_data)):
+        errors.append("Audio contains infinite values.")
+    
+    # 6. Check audio range (should be between -1 and 1 after normalization)
+    max_val = np.max(np.abs(audio_data))
+    if max_val > 10:  # Allow some leeway for unnormalized audio
+        errors.append(f"Audio has unusually high amplitude (max: {max_val:.2f}).")
+    
+    return errors, duration
 
 @router.post("/", response_model=DetectionResponse)
 async def detect_voice(
@@ -130,9 +133,15 @@ async def detect_voice(
     - X-API-Key: Your API key (required)
     
     **Request Body:**
-    - audio_url: URL to audio file (MP3, WAV, etc.) or base64-encoded audio
+    - audio: Base64-encoded MP3 audio string
     - language: Language code (ta, en, hi, ml, te) - default: en
     - test_description: Optional description for reference
+    
+    **Audio Constraints:**
+    - Maximum duration: 60 seconds
+    - Maximum file size: 10MB
+    - Minimum duration: 1 second
+    - Supported formats: MP3 (automatically converted)
     
     **Response:**
     - result: "AI_GENERATED" or "HUMAN"
@@ -144,7 +153,7 @@ async def detect_voice(
     **Example Request:**
     ```json
     {
-        "audio_url": "https://example.com/audio.mp3",
+        "audio": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQQAAAD//w==",
         "language": "en",
         "test_description": "Test audio"
     }
@@ -162,49 +171,29 @@ async def detect_voice(
     validate_api_key(x_api_key)
     
     try:
-        # Step 1: Download audio
-        audio_bytes = download_audio_from_url(request.audio_url)
+        # Step 1: Decode base64 audio
+        audio_bytes = decode_base64_audio(request.audio)
         
-        # CHECK FOR TEST MODE OVERRIDE
-        test_mode_result = get_test_mode_override(request.audio_url)
+        # Step 2: Validate audio size
+        validate_audio_size(audio_bytes)
         
-        # Step 2: Validate audio size (max 10MB)
-        if len(audio_bytes) > 10 * 1024 * 1024:
-            raise HTTPException(
-                status_code=400,
-                detail="Audio file too large. Maximum size is 10MB."
-            )
+        # Step 3: Load audio using processor
+        processor = AudioProcessor(sample_rate=16000, max_duration=MAX_DURATION_SECONDS)
         
-        # IF TEST MODE, RETURN HARDCODED RESULT
-        if test_mode_result:
-            processing_time = int((time.time() - start_time) * 1000)
-            confidence = 0.95 if test_mode_result == "HUMAN" else 0.92
-            return DetectionResponse(
-                status="success",
-                result=test_mode_result,
-                confidence=float(confidence),
-                language=request.language or "en",
-                processing_time_ms=processing_time,
-                features_extracted=8,
-                message=f"Test mode: {test_mode_result}"
-            )
-        
-        # Step 3: Load audio
-        processor = AudioProcessor(sample_rate=16000)
-        
-        # Determine file format from URL
-        if request.audio_url.endswith('.wav'):
-            file_format = 'wav'
-        elif request.audio_url.endswith('.flac'):
-            file_format = 'flac'
-        elif request.audio_url.endswith('.ogg'):
-            file_format = 'ogg'
-        else:
-            file_format = 'mp3'
+        # We assume MP3 format for hackathon (as per requirements)
+        file_format = 'mp3'
         
         audio_data, sr = processor.load_audio_from_bytes(audio_bytes, file_format)
         
-        # Step 4: Validate audio
+        # Step 4: Validate audio constraints
+        constraint_errors, duration = validate_audio_constraints(audio_bytes, audio_data, sr)
+        if constraint_errors:
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(constraint_errors)
+            )
+        
+        # Step 5: Validate audio quality
         is_valid, error_msg = processor.validate_audio(audio_data)
         if not is_valid:
             raise HTTPException(
@@ -212,17 +201,17 @@ async def detect_voice(
                 detail=f"Invalid audio: {error_msg}"
             )
         
-        # Step 5: Normalize audio
+        # Step 6: Normalize audio
         audio_data = processor.normalize_audio(audio_data)
         
-        # Step 6: Get detector and extract features
+        # Step 7: Get detector and extract features
         detector = get_detector()
         features = detector.extract_features(audio_data, sr)
         
-        # Step 7: Make prediction
+        # Step 8: Make prediction
         result, confidence = detector.predict(features)
         
-        # Step 8: Prepare response
+        # Step 9: Prepare response
         processing_time = int((time.time() - start_time) * 1000)
         
         return DetectionResponse(
@@ -232,13 +221,17 @@ async def detect_voice(
             language=request.language.value,
             processing_time_ms=processing_time,
             features_extracted=len(features),
-            message=request.test_description or "Voice classification completed successfully"
+            message=request.test_description or f"Voice classification completed. Audio: {duration:.2f}s"
         )
                 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Audio processing error: {str(e)}"
+        )
     except Exception as e:
-        import traceback
         raise HTTPException(
             status_code=500,
             detail=f"Error processing audio: {str(e)}"
@@ -255,5 +248,26 @@ async def test_detection():
             "GET /detect/test": "This test endpoint"
         },
         "supported_languages": ["en", "ta", "hi", "ml", "te"],
-        "supported_formats": ["mp3", "wav", "flac", "ogg"]
+        "supported_formats": ["mp3"],
+        "input_format": "base64-encoded MP3 audio",
+        "constraints": {
+            "max_duration_seconds": MAX_DURATION_SECONDS,
+            "min_duration_seconds": MIN_DURATION_SECONDS,
+            "max_file_size_mb": MAX_FILE_SIZE_BYTES / (1024 * 1024),
+            "sample_rate_range": f"{MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE} Hz"
+        }
+    }
+
+@router.get("/constraints")
+async def get_constraints():
+    """Get audio constraints information"""
+    return {
+        "max_duration_seconds": MAX_DURATION_SECONDS,
+        "min_duration_seconds": MIN_DURATION_SECONDS,
+        "max_file_size_bytes": MAX_FILE_SIZE_BYTES,
+        "max_file_size_mb": MAX_FILE_SIZE_BYTES / (1024 * 1024),
+        "min_sample_rate_hz": MIN_SAMPLE_RATE,
+        "max_sample_rate_hz": MAX_SAMPLE_RATE,
+        "min_audio_rms": MIN_AUDIO_RMS,
+        "supported_languages": ["ta", "en", "hi", "ml", "te"]
     }

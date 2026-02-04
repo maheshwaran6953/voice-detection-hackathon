@@ -1,8 +1,44 @@
-venv/ 
-__pycache__/ 
-*.pyc
-.env 
-models/ 
-logs/ 
-*.mp3 
-*.wav 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Audio files (except samples)
+*.mp3
+*.wav
+*.m4a
+
+# Model files (if large)
+# ml/models/voice_detector_model.joblib  # Uncomment if model is too large

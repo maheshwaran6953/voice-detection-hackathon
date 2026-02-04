@@ -31,3 +31,20 @@ def read_root():
 @app.get("/health") 
 def health_check(): 
     return {"status": "healthy", "service": "voice-detection"} 
+
+# In api/main.py, add after app initialization
+@app.on_event("startup")
+async def startup_event():
+    """Initialize and save model on startup"""
+    from ml.voice_detector import VoiceDetector
+    
+    print("Initializing voice detector...")
+    detector = VoiceDetector()
+    
+    # Save the trained model
+    import os
+    model_dir = "ml/models"
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "voice_detector_model.joblib")
+    detector.save_model(model_path)
+    print(f"Model saved to {model_path}")
