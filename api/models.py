@@ -3,28 +3,23 @@ from typing import Optional
 from enum import Enum
 
 class Language(str, Enum):
-    """Supported languages for voice detection"""
-    TAMIL = "ta"
-    ENGLISH = "en"
-    HINDI = "hi"
-    MALAYALAM = "ml"
-    TELUGU = "te"
+    en = "en"
+    ta = "ta"
+    hi = "hi"
+    ml = "ml"
+    te = "te"
 
 class DetectionRequest(BaseModel):
-    """Request model for voice detection - CORRECTED FOR HACKATHON"""
-    audio: str = Field(..., description="Base64-encoded MP3 audio string")
-    language: Language = Language.ENGLISH
+    language: Language = Language.en
+    audio_format: str = "wav"  # Add this
+    audio_base64_format: str = Field(..., alias="audio")  # Accept both
     test_description: Optional[str] = None
     
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "audio": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQQAAAD//w==",
-                "language": "en",
-                "test_description": "Test audio sample"
-            }
+    class Config:
+        allow_population_by_field_name = True
+        fields = {
+            'audio_base64_format': {'alias': 'audio'}
         }
-    }
 
 class DetectionResponse(BaseModel):
     """Response model for voice detection"""
