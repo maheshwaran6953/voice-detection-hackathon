@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Union
 from enum import Enum
 
 class Language(str, Enum):
@@ -10,29 +10,33 @@ class Language(str, Enum):
     te = "te"
 
 class DetectionRequest(BaseModel):
+    # Accept both field names for hackathon compatibility
     language: Language = Language.en
-    audio_format: str = "wav"  # Add this
-    audio_base64_format: str = Field(..., alias="audio")  # Accept both
+    audio_format: str = "wav"
+    audio_base64_format: Optional[str] = None  # Hackathon format
+    audio: Optional[str] = None  # Original format
     test_description: Optional[str] = None
+    
+    # Custom validator to ensure we have at least one audio field
+    def get_audio_data(self):
+        """Get audio data from either field"""
+        if self.audio_base64_format:
+            return self.audio_base64_format
+        elif self.audio:
+            return self.audio
+        else:
+            raise ValueError("Either 'audio' or 'audio_base64_format' field is required")
     
     class Config:
         allow_population_by_field_name = True
-        fields = {
-            'audio_base64_format': {'alias': 'audio'}
-        }
-
-class DetectionResponse(BaseModel):
-    """Response model for voice detection"""
-    status: str
-    result: str  # "AI_GENERATED" or "HUMAN"
-    confidence: float
-    language: str
-    processing_time_ms: int
-    features_extracted: int
-    message: Optional[str] = None
-
-class ErrorResponse(BaseModel):
-    """Error response model"""
-    error: str
-    detail: Optional[str] = None
-    status_code: int
+        extra = "allow"  # Allow extra fields for flexibility
+    
+    class DetectionResponse(BaseModel):
+        status: str
+        result: str  # "AI_GENERATED" or "HUMAN"
+        confidence: float
+        language: str
+        processing_time_ms: int
+        features_extracted: int
+        message: Optional[str] = None
+        audio_duration_seconds: Optional[float] = None

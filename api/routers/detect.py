@@ -132,16 +132,20 @@ async def detect_voice(
     **Headers:**
     - X-API-Key: Your API key (required)
     
-    **Request Body:**
-    - audio: Base64-encoded MP3 audio string
-    - language: Language code (ta, en, hi, ml, te) - default: en
-    - test_description: Optional description for reference
+    **Request Body (Hackathon Format):**
+    - language: Language code (en, ta, hi, ml, te) - default: en
+    - audio_format: Audio format (wav, mp3, etc.) - default: wav
+    - audio_base64_format: Base64-encoded audio string (required)
+    
+    **OR (Original Format):**
+    - audio: Base64-encoded audio string (required)
+    - language: Language code
+    - test_description: Optional description
     
     **Audio Constraints:**
     - Maximum duration: 60 seconds
     - Maximum file size: 10MB
     - Minimum duration: 1 second
-    - Supported formats: MP3 (automatically converted)
     
     **Response:**
     - result: "AI_GENERATED" or "HUMAN"
@@ -149,15 +153,6 @@ async def detect_voice(
     - language: Detected language
     - processing_time_ms: Time taken
     - features_extracted: Number of features analyzed
-    
-    **Example Request:**
-    ```json
-    {
-        "audio": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQQAAAD//w==",
-        "language": "en",
-        "test_description": "Test audio"
-    }
-    ```
     """
     
     start_time = time.time()
@@ -171,21 +166,45 @@ async def detect_voice(
     validate_api_key(x_api_key)
     
     try:
-        # Step 1: Decode base64 audio
-        audio_bytes = decode_base64_audio(request.audio)
+        # Step 1: Get audio data from either field
+        audio_base64 = None
         
-        # Step 2: Validate audio size
+        # Try hackathon format first
+        if request.audio_base64_format:
+            audio_base64 = request.audio_base64_format
+        # Fall back to original format
+        elif request.audio:
+            audio_base64 = request.audio
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'audio' or 'audio_base64_format' field is required"
+            )
+        
+        # Get audio format (default to 'wav' if not provided)
+        audio_format = request.audio_format if request.audio_format else 'wav'
+        
+        # Get language
+        language = request.language.value if request.language else 'en'
+        
+        # Get test description
+        test_description = request.test_description or f"Hackathon test - {audio_format}"
+        
+        # Step 2: Decode base64 audio
+        audio_bytes = decode_base64_audio(audio_base64)
+        
+        # Step 3: Validate audio size
         validate_audio_size(audio_bytes)
         
-        # Step 3: Load audio using processor
+        # Step 4: Load audio using processor
         processor = AudioProcessor(sample_rate=16000, max_duration=MAX_DURATION_SECONDS)
         
-        # We assume MP3 format for hackathon (as per requirements)
-        file_format = request.audio_format
+        # Use the provided audio format
+        file_format = audio_format.lower()
         
         audio_data, sr = processor.load_audio_from_bytes(audio_bytes, file_format)
         
-        # Step 4: Validate audio constraints
+        # Step 5: Validate audio constraints
         constraint_errors, duration = validate_audio_constraints(audio_bytes, audio_data, sr)
         if constraint_errors:
             raise HTTPException(
@@ -193,7 +212,7 @@ async def detect_voice(
                 detail="; ".join(constraint_errors)
             )
         
-        # Step 5: Validate audio quality
+        # Step 6: Validate audio quality
         is_valid, error_msg = processor.validate_audio(audio_data)
         if not is_valid:
             raise HTTPException(
@@ -201,27 +220,28 @@ async def detect_voice(
                 detail=f"Invalid audio: {error_msg}"
             )
         
-        # Step 6: Normalize audio
+        # Step 7: Normalize audio
         audio_data = processor.normalize_audio(audio_data)
         
-        # Step 7: Get detector and extract features
+        # Step 8: Get detector and extract features
         detector = get_detector()
         features = detector.extract_features(audio_data, sr)
         
-        # Step 8: Make prediction
+        # Step 9: Make prediction
         result, confidence = detector.predict(features)
         
-        # Step 9: Prepare response
+        # Step 10: Prepare response
         processing_time = int((time.time() - start_time) * 1000)
         
         return DetectionResponse(
             status="success",
             result=result,
             confidence=round(confidence, 4),
-            language=request.language.value,
+            language=language,
             processing_time_ms=processing_time,
             features_extracted=len(features),
-            message=request.test_description or f"Voice classification completed. Audio: {duration:.2f}s"
+            message=test_description,
+            audio_duration_seconds=round(duration, 2)
         )
                 
     except HTTPException:
@@ -248,8 +268,8 @@ async def test_detection():
             "GET /detect/test": "This test endpoint"
         },
         "supported_languages": ["en", "ta", "hi", "ml", "te"],
-        "supported_formats": ["mp3"],
-        "input_format": "base64-encoded MP3 audio",
+        "supported_formats": ["wav", "mp3", "flac"],
+        "input_format": "base64-encoded audio",
         "constraints": {
             "max_duration_seconds": MAX_DURATION_SECONDS,
             "min_duration_seconds": MIN_DURATION_SECONDS,
