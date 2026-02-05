@@ -181,7 +181,7 @@ async def detect_voice(
         processor = AudioProcessor(sample_rate=16000, max_duration=MAX_DURATION_SECONDS)
         
         # We assume MP3 format for hackathon (as per requirements)
-        file_format = 'mp3'
+        file_format = request.audio_format
         
         audio_data, sr = processor.load_audio_from_bytes(audio_bytes, file_format)
         
