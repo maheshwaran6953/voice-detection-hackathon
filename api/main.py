@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import base64
 import time
+import json
 
 app = FastAPI(
     title="Voice Detection API",
@@ -22,9 +23,7 @@ app.add_middleware(
 # MAIN HACKATHON ENDPOINT
 @app.post("/detect")
 async def detect_voice(
-    language: str = "en",
-    audio_format: str = "wav",
-    audio_base64_format: str = None,
+    request_data: dict = Body(...),  # Accept raw JSON dict
     x_api_key: str = Header(None, alias="X-API-Key")
 ):
     """
@@ -33,6 +32,11 @@ async def detect_voice(
     # Validate API key
     if x_api_key != "hackathon-key-2024":
         raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    # Extract fields from request data
+    audio_base64_format = request_data.get("audio_base64_format")
+    language = request_data.get("language", "en")
+    audio_format = request_data.get("audio_format", "wav")
     
     # Validate required field
     if not audio_base64_format:
@@ -47,6 +51,9 @@ async def detect_voice(
         # Validate audio size (10MB max)
         if len(audio_bytes) > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Audio file too large (max 10MB)")
+        
+        if len(audio_bytes) < 1024:
+            raise HTTPException(status_code=400, detail="Audio file too small")
         
         # Your ML model would process here
         # For now, return mock response
