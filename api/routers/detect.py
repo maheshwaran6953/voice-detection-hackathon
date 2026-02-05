@@ -167,18 +167,18 @@ async def detect_voice(
     
     try:
         # Step 1: Get audio data from either field
-        audio_base64 = None
-        
-        # Try hackathon format first
-        if request.audio_base64_format:
-            audio_base64 = request.audio_base64_format
-        # Fall back to original format
-        elif request.audio:
+        # Get audio data - prioritize audio_base64_format for hackathon
+        audio_base64 = request.audio_base64_format
+
+        # If not provided in hackathon format, try original format
+        if not audio_base64:
             audio_base64 = request.audio
-        else:
+
+        # If still not found, raise error
+        if not audio_base64:
             raise HTTPException(
                 status_code=400,
-                detail="Either 'audio' or 'audio_base64_format' field is required"
+                detail="audio_base64_format is required (or 'audio' for legacy support)"
             )
         
         # Get audio format (default to 'wav' if not provided)
